@@ -1,19 +1,6 @@
-from keras.models import Sequential
-from keras.layers.core import Dense, Dropout, Activation, Flatten
-from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.optimizers import SGD,RMSprop,adam
-from keras.utils import np_utils
-
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
-import os
-import theano
-from PIL import Image
 from numpy import *
-# SKLEARN
-from sklearn.utils import shuffle
-from sklearn.cross_validation import train_test_split
+import os
+from shutil import copyfile, move
 
 # input image dimensions
 img_rows, img_cols = 200, 200
@@ -23,49 +10,37 @@ img_channels = 1
 
 #  Data
 
-path1 = '/home/pratik/git_projects/ContextAwareness/dataset/envelope'           #path of folder of images
-path2 = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_train'     #path of folder to save training images
-path3 = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_test'      #path of folder to save test images
+source_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope'           #path of folder of images
+train_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_train'     #path of folder to save training images
+test_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_test'      #path of folder to save test images
 
-listing = os.listdir(path1)
+listing = os.listdir(train_path)
 num_samples=size(listing)
 print num_samples
 
+s=8         # Class_number
+count = 1   # Image_number
+
 for file in listing:
-    im = Image.open(path1 + '/' + file)
-    img = im.resize((img_rows,img_cols))
-    gray = img.convert('L')
-                #need to do some more processing here
-    gray.save(path2 +'\\' +  file, "JPEG")
 
-imlist = os.listdir(path2)
+    # Code to rename files according to spec: classnumber_classname_imagenumber
 
-im1 = array(Image.open('input_data_resized' + '\\'+ imlist[0])) # open one image to get size
-m,n = im1.shape[0:2] # get the size of the images
-imnbr = len(imlist) # get the number of images
+    # class_number = '{:2d}'.format(s)
+    # if ("tallbuilding_") in file:
+    #     print file
+    #     # print fname
+    #     # filename = os.path.splitext(file)[0].split('_')[0].encode('utf8')
+    #     filename = class_number + "_" + "buildings" + "_" + str(count) + ".jpg"
+    #     print filename
+    #     count += 1
+    #     copyfile(source_path + "/" + file, train_path + '/' + filename)
 
-import os
-import glob
-from shutil import copyfile
+    # Code to split data into training and testing set.
+    # 250 train images, rest is test
 
-train_dir = '/home/pratik/voxnet1/train/'
-dest_dir = '/home/pratik/voxnet1/organisedtrain/'
-validation_dir = '/home/pratik/voxnet1/validation/'
-test_dir = '/home/pratik/voxnet1/organisedtest/'
-
-for s in range(1, 13):
-    count = 1
-    s_dir = '{:02d}'.format(s)
-    train_path = validation_dir + 'S' + s_dir
-    for fname in glob.glob(os.path.join(train_path, '*.pcd')):
-        if (".003.pcd") in fname:
-            #print fname
-            filename = os.path.splitext(fname)[0].split('/')[-1].encode('utf8')
-            filename = filename[0:len(filename) - 8]  # r Remove rotation number
-            filename = filename + '{:04d}'.format(count)
-            count += 1
-            filename = filename + '.002.pcd'
-            # print count
-            copyfile(fname, test_dir + 'S' + s_dir + '/' + filename)
+    img_num = os.path.splitext(file)[0].split('_')[-1].encode('utf8')
+    if int(img_num) > 250:
+        print file
+        move(train_path + "/" + file, test_path + '/' + file)
 
 print "Done!"
