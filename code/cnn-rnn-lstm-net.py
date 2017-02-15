@@ -1,27 +1,27 @@
+import os
+import cv2
 import numpy as np
 import inception_v3 as inception
-from keras.models import Sequential
+from keras.models import Sequential, Model
 from keras.layers import Dense
 from keras.layers import Dropout
-from keras.layers import Flatten
 from keras.layers import LSTM
-from keras.layers import Input
-from keras.layers import Masking
+from keras.layers import RepeatVector
 from keras.layers import Embedding
-from keras.layers import GRU
-from keras.constraints import maxnorm
-from keras.optimizers import SGD
-from keras.layers.convolutional import Convolution2D
-from keras.layers.convolutional import MaxPooling2D
+from keras.layers import TimeDistributedDense
+from keras.layers import Merge
+from keras.layers import Activation
+from keras.optimizers import RMSprop
 from keras.preprocessing import image
+from keras.preprocessing import sequence
 from keras.preprocessing.image import ImageDataGenerator
 from keras.utils import np_utils
 from keras import backend as K
 
-K.set_image_dim_ordering('th')
+K.set_image_dim_ordering('tf')
 
 # path of folder with training images
-train_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_train'
+train_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope'
 # path of folder with test images
 test_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_test'
 
@@ -30,7 +30,8 @@ seed = 7
 np.random.seed(seed)
 
 # Configuration constants
-MAX_CAPTION = 16
+MAX_LABELS = 2
+NUM_LABELS = 8 # Number of classes
 OUTPUT_DIM = 128
 IM_SIZE = (256,256)
 DIM_WORD = 300
@@ -39,6 +40,7 @@ DIM_WORD = 300
 
 # Import Inception v3 as the standard CNN feature extractor
 # Start with an Inception V3 model, not including the final softmax layer.
+print "Loading Inception V3 as image model"
 image_model = inception.InceptionV3(weights='imagenet')
 print 'Loaded Inception model'
 
@@ -50,70 +52,42 @@ for layer in image_model.layers:
 x = Dense(2048, activation='relu')(image_model.get_layer('flatten').output)
 x = Dropout(0.5)(x)
 
-# Build the caption GRU model
-caption_model = Sequential()
-caption_input = Input(shape=([MAX_CAPTION],), dtype='int32', name='caption_input')
-X = Masking(mask_value=0, input_shape=(MAX_CAPTION, OUTPUT_DIM))(caption_input)
-X = Embedding(output_dim=DIM_WORD, input_dim=model_config['worddict'], input_length=model_config['max_cap_length'])(cap_input)
-caption_model.add(GRU())
+# Build the label LSTM model
+print "Loading label model"
+label_model = Sequential()
+label_model.add(Embedding(NUM_LABELS, 256, input_length=MAX_LABELS))
+label_model.add(LSTM(output_dim=128, return_sequences=True))
+label_model.add(TimeDistributedDense(128))
+print "Label model loaded"
 
+# Repeat image feature vector to turn it into a sequence
+print "Repeat model loading"
+x = RepeatVector(MAX_LABELS)(x)
+# image_model.add(RepeatVector(MAX_LABELS))
+print "Repeat model loaded"
 
+img_model = Model(input=image_model.input, output=x)
+
+# Merge image features and label features by concatenation
+print "Merging image and label features"
 model = Sequential()
-model.add(Convolution2D(32, 3, 3, input_shape=(3, 256, 256), activation='relu', border_mode='same'))
-model.add(Dropout(0.2))
-model.add(Convolution2D(32, 3, 3, activation='relu', border_mode='same'))
-model.add(MaxPooling2D(pool_size=(2,2)))
-model.add(Convolution2D(64, 5, 5, activation='relu', border_mode='same'))
-model.add(MaxPooling2D(pool_size=(4,4)))
-model.add(Flatten())
-model.add(Dropout(0.2))
-model.add(Dense(256, activation='relu', W_constraint=maxnorm(3)))
-model.add(Dropout(0.2))
-model.add(Dense(N_CLASSES, activation='softmax'))
+model.add(Merge([img_model, label_model], mode='concat', concat_axis=-1))
+
+# Encode this vector into a single representation vector
+model.add(LSTM(256, return_sequences=False))
+model.add(Dense(NUM_LABELS))
+model.add(Activation('softmax'))
+
+print "Merged"
 
 # Compile model
-model.compile(loss='categorical_crossentropy', optimizer='sgd', metrics=['accuracy'])
+optimizer = RMSprop()
+model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
 # Show some debug output
 print (model.summary())
 print 'Trainable weights'
 print model.trainable_weights
-
-# Define class mapping
-class_map=['coast', 'forest', 'city', 'buildings', 'highway', 'street', 'country', 'mountain']
-
-# Generate training and testing data
-train_datagen = ImageDataGenerator(rescale=1. / 255)
-train_generator = train_datagen.flow_from_directory(
-    train_path,  # this is the target directory
-    target_size=IM_SIZE,  # all images will be resized to 299x299 Inception V3 input
-    batch_size=8,
-    classes=class_map,
-    class_mode='categorical')
-
-test_datagen = ImageDataGenerator(rescale=1. / 255)
-test_generator = test_datagen.flow_from_directory(
-    test_path,  # this is the target directory
-    target_size=IM_SIZE,  # all images will be resized to 256x256
-    batch_size=8,
-    classes=class_map,
-    class_mode='categorical')
-
-model.fit_generator(
-    train_generator,
-    samples_per_epoch=2000,
-    nb_epoch=25,
-    validation_data=test_generator,
-    verbose=2,
-    nb_val_samples=80,
-    callbacks=[])
-
-predict_generator = test_datagen.flow_from_directory(
-    test_path,  # this is the target directory
-    target_size=IM_SIZE,  # all images will be resized to 256x256
-    batch_size=2,
-    classes=class_map,
-    class_mode='categorical')
 
 #Save the model
 model_json = model.to_json()
@@ -122,49 +96,56 @@ with open("scene8_model.json", "w") as json_file:
 
 print "Model saved to disk"
 
+# Ready the data
+
+print "Preprocessing data"
+label_map=['coast', 'forest', 'city', 'buildings', 'highway', 'street', 'country', 'mountain']
+
+# Load image data
+images = []
+
+listing = os.listdir(train_path)
+for file in (listing):
+    path = train_path + "/" + file
+    print path
+    img = cv2.imread(train_path + "/" + file, cv2.IMREAD_COLOR)
+    img.resize((299,299,3))
+    images.append(img)
+
+images = np.asarray(images) # Change list to numpy array
+
+# Load label data
+labels = []
+words = [txt.split() for txt in label_map]
+unique = []
+for word in words:
+    unique.extend(word) # Integrate separate list elements into a single list
+
+unique = list(set(unique)) # Finds unique words
+word_index = {}
+index_word = {}
+for i, word in enumerate(unique):
+    word_index[word] = i
+    index_word[i] = word
+
+partial_captions = []
+for label in label_map:
+    one = [word_index[lab] for lab in label.split()]
+    partial_captions.append(one)
+
+partial_captions = sequence.pad_sequences(partial_captions, maxlen=MAX_LABELS, padding='post')
+
+next_words = np.zeros((8, NUM_LABELS))
+for i, label in enumerate(label_map):
+    label = label.split()
+    x = [word_index[lab] for label in label]
+    x = np.asarray(x)
+    next_words[i,x] = 1
+
+print "Data preprocessing done"
+
+print "Begin training"
+model.fit([images, partial_captions], next_words, batch_size=16, nb_epoch=5)
 # Save weights
-model.save_weights('scene8_pretrain.h5')  # always save your weights after training or during training
+model.save_weights('scene8_captionlearn.h5')  # always save your weights after training or during training
 print "Weights saved to disk"
-
-# model.predict_generator(
-#     predict_generator,
-#     val_samples=2,
-#     max_q_size=10,
-#     pickle_safe=False)
-
-img_path = '/home/pratik/git_projects/ContextAwareness/dataset/envelope_test/coast/1_coast_251.jpg'
-img = image.load_img(img_path, target_size=IM_SIZE)
-x = image.img_to_array(img)
-x = np.expand_dims(x, axis=0)
-
-preds = model.predict(x)
-print('Predicted:', preds)
-
-
-scores = model.evaluate_generator(
-    predict_generator,
-    val_samples=10,
-    max_q_size=10,
-    nb_worker=1,
-    pickle_safe=False)
-
-print("%s: %.2f%%" % (model.metrics_names[1], scores[1]*100))
-
-# # Compile model
-# epochs = 25
-# lrate = 0.01
-# decay = lrate/epochs
-# sgd = SGD(lr=lrate, momentum=0.9, decay=decay, nesterov=False)
-# model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
-# print(model.summary())
-#
-# X_test = x_test[0:32]
-# Y_test = y_test[0:32]
-# np.random.seed(seed)
-# model.fit(x_train, y_train, validation_data=(X_test, Y_test), nb_epoch=epochs, shuffle=True, batch_size=8)
-#
-# # Final evaluation of the model
-# scores = model.evaluate(x_test, y_test, verbose=0)
-# print("Accuracy: %.2f%%" % (scores[1]*100))
-
-# specify number of test images
